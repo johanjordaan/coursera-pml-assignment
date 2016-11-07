@@ -62,15 +62,28 @@ fitModels <- function(data,p) {
 
 models <- fitModels(tr,classe)
 
-useModels = function(m,p,t) {
+useModels = function(m,p,t,levels) {
   p <- deparse(substitute(p))
   backup <- t[[p]]
-  levels = levels(t[[p]])  
 
+  tmp = vector(mode='list')
+  
   for(i in levels) {
-    print(i)
-    t[[p]] <- as.factor(backup == i)
-    t[[i]] <- predict(m[[i]],newdata = t, type="prob")$`TRUE`
+    tmp[[i]] <- predict(m[[i]],newdata = t, type="prob")$`TRUE`
+  }
+
+  tmp <- as.data.frame(tmp)
+  
+  # TODO: Hack, this can be done more functionally
+  t$pred <- rep(NA,nrow(t))
+  for(i in 1:nrow(tmp)) {
+    bestFit <- -1
+    for(n in levels) {
+      if(tmp[[n]][i]>bestFit) {
+        bestFit <- tmp[[n]][i]
+        t$pred[i] <- n
+      }       
+    }
   }
 
   t[[p]] <- backup
@@ -79,10 +92,24 @@ useModels = function(m,p,t) {
 
 
 
+testData <- fread("pml-testing.csv")
+testData <- testData[,-c(1:6),with=F]
+testData <- testData[,lapply(.SD,function(x) {
+  x[x==""] <- NA
+  x[x=="NA"] <- NA
+  
+  x[is.na(x)] <- 0
+  x <- as.numeric(x);
+  x[is.na(x)] <- 0
+
+  return(x);  
+})]
+testData$problem_id <- NULL
+testData <- as.data.frame(testData)
 
 
 
-
+testData <- useModels(models,classe,testData,levels(trainData$classe))
 
 
 
