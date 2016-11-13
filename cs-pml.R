@@ -3,64 +3,125 @@ library("data.table")
 library("caret")
 library("rattle")
 library("glmnet")
+library("GGally")
 
-
-# Load the data and do some preliminary cleaning
-#
 trainData <- fread("pml-training.csv")
-trainData <- trainData[,-c(1:6),with=F]
-trainData <- trainData[,lapply(.SD,function(x) {
+
+# Sanity Check
+sanityCheck <- function(data,numericCount,factorCount) {
+  trainDataClasses <- lapply(data,class)
+  stopifnot(sum(trainDataClasses == 'numeric') == numericCount)
+  stopifnot(sum(trainDataClasses == 'factor') == factorCount)
+}
+
+# Save the user names and classes for later analysis
+userNames <- trainData$user_name
+classe <- as.factor(trainData$classe) 
+
+# Remove the columns we are not interested in
+classeIndex <- which(names(trainData)=="classe")
+trainData <- trainData[,-c(1:6,classeIndex),with=F]
+
+# Do simple cleaning
+cleanData <- function(x) {
   x[x==""] <- NA
   x[x=="NA"] <- NA
-
-  if(sum(x == trainData$classe,na.rm=TRUE) == length(trainData$classe)) {
-    return(as.factor(x))
-  } else {
-    x[is.na(x)] <- 0
-    x <- as.numeric(x);
-    x[is.na(x)] <- 0
-  }
-    
+  
+  x[is.na(x)] <- 0
+  x <- as.numeric(x);
+  x[is.na(x)] <- 0
+  
   return(x);  
-})]
+}
+trainData <- trainData[,lapply(.SD,cleanData)]
 
-trainData <- as.data.frame(trainData)
+sanityCheck(trainData,153,0)
 
-trainDataClasses <- lapply(trainData,class)
-stopifnot(sum(trainDataClasses == 'numeric') == 153)
-stopifnot(sum(trainDataClasses == 'factor') == 1)
+
+## Remove zerovariance
+nearZeroVarCols <- nearZeroVar(trainData)
+trainData <- data.table(data.frame(trainData)[, -nearZeroVarCols])
+
+sanityCheck(trainData,53,0)
+
+## PCA 
+preprocessParams <- preProcess(trainData, method=c("center", "scale", "pca"))
+trainDataPCA <- predict(preprocessParams, trainData)
+
+sanityCheck(trainDataPCA,26,0)
+
+## Explore the base data
+ggplot(data=data.frame(classe),aes(x=classe))+geom_bar()
+ggplot(data=data.frame(userNames),aes(x=userNames))+geom_bar()
+
+## Explore the PCA data a bit
+ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=classe))+geom_point(alpha=0.2)
+ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=userNames))+geom_point(alpha=0.2)
+
+# Conclusing at this point - The data needs to be scaled per user before pca
+centerByUser <- function(data,userNames) {
+  for(n in unique(userNames)) {
+    m <- mean(data[userNames==n])
+    data[userNames==n] <- data[userNames==n] - m
+  }
+  return(data)
+}  
+trainData <- trainData[,lapply(.SD,function(x){ centerByUser(x,userNames); })]
+
+# Another round of PCA
+preprocessParams <- preProcess(trainData, method=c("center", "scale", "pca"))
+trainDataPCA <- predict(preprocessParams, trainData)
+
+sanityCheck(trainDataPCA,33,0)
+
+## Explore the PCA data a bit
+ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=classe))+geom_point(alpha=0.2)
+ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=userNames))+geom_point(alpha=0.2)
+
+## Find the one weird outlier and deal with it ... This migth be an issue in testing ?
+classe <- classe[trainDataPCA$PC2>-40]
+userNames <- userNames[trainDataPCA$PC2>-40]
+trainDataPCA <- trainDataPCA[trainDataPCA$PC2>-40,]
+
+## Explore the PCA data a bit
+ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=classe))+geom_point(alpha=0.2)
+ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=userNames))+geom_point(alpha=0.2)
 
 
 # Partition data into training and cv sets
-# NOTES: Does this randomise the order?
-#
-#folds <- createFolds(trainData$classe,k=10,list=TRUE,returnTrain=TRUE)
-#resa <- createResample(trainData$classe,times=10,list=TRUE)
-set.seed(1337)
-inTrain <- createDataPartition(trainData$classe,p=0.75,list=FALSE)
-tr <- trainData[inTrain,]
-cv <- trainData[-inTrain,]
 
 # Lets try piecewise logistic regression
 #
-fitModels <- function(data,p) {
-  p <- deparse(substitute(p))
-  backup <- data[[p]]
-  levels = levels(data[[p]])  
+fitModels <- function(x,y) {
+  levels = levels(y)  
   retVal = vector(mode="list")
 
   for(i in levels) {
     print(i)
-    data[[p]] <- as.factor(backup==i)
-    model <- train(as.formula(paste(p,"~.")),data=data,method="glm")
+    y_i <- as.factor(y==i)
+    model <- train(x=x,y=y_i,method="glm",family="binomial")
     print(confusionMatrix(model))
     retVal[[i]] <- model
   }
-  data[[p]] <- backup
-  return(retVal);
+  return(retVal)
 }
 
-models <- fitModels(tr,classe)
+
+set.seed(1337)
+inTrain <- createDataPartition(classe,p=0.75,list=FALSE)
+
+tr <- trainDataPCA[inTrain,]
+tr_cl <- classe[inTrain]
+cv <- trainDataPCA[-inTrain,]
+cv_cl <- classe[-inTrain]
+models <- fitModels(tr,tr_cl)
+
+tr2 <- trainData[inTrain,]
+tr2_cl <- classe[inTrain]
+cv2 <- trainData[-inTrain,]
+cv2_cl <- classe[-inTrain]
+models2 <- fitModels(tr2,tr2_cl)
+
 
 useModels = function(m,p,t,levels) {
   p <- deparse(substitute(p))
@@ -90,26 +151,26 @@ useModels = function(m,p,t,levels) {
   return(t)
 }
 
+cv$classe <- cv_cl 
+cvRes <- useModels(models,classe,cv,levels(cv_cl))$pred
+
+cv2$classe <- cv2_cl 
+cv2Res <- useModels(models2,classe,cv2,levels(cv2_cl))$pred
+
 
 
 testData <- fread("pml-testing.csv")
-testData <- testData[,-c(1:6),with=F]
-testData <- testData[,lapply(.SD,function(x) {
-  x[x==""] <- NA
-  x[x=="NA"] <- NA
-  
-  x[is.na(x)] <- 0
-  x <- as.numeric(x);
-  x[is.na(x)] <- 0
+testDataUserNames = testData$user_names 
+testDataClasse = testData$classe
+testData <- testData[,-c(1:6,which(names(testData)=="problem_id")),with=F]
+testData <- testData[,lapply(.SD,cleanData)]
 
-  return(x);  
-})]
-testData$problem_id <- NULL
-testData <- as.data.frame(testData)
+# Apply the same transformation on test data
+testData <- data.table(data.frame(testData)[, -nearZeroVarCols])
+testData <- testData[,lapply(.SD,function(x){ centerByUser(x,testDataUserNames); })]
+testDataPCA <- predict(preprocessParams, testData)
 
-
-
-testData <- useModels(models,classe,testData,levels(trainData$classe))
+testDataRes <- useModels(models,classe,testDataPCA,levels(classe))$pred
 
 
 
@@ -117,33 +178,6 @@ testData <- useModels(models,classe,testData,levels(trainData$classe))
 
 
 
+#BABAAEDeAAdaBAEEABaB
 
-
-#trainData <- factorise(trainData)
-
-#control <- trainControl(method="repeatedcv", number=10, repeats=3)
-#model <- train(trainData,trainDataRes,method="rpart",preProcess="scale", trControl=control, tuneLength=5)
-
-#trainData <- trainData[,apply(trainData, 2, var, na.rm=TRUE) != 0]
-
-#preprocessParams <- preProcess(trainData, method=c("center", "scale", "pca"))
-
-#print(preprocessParams)
-
-#transformed <- predict(preprocessParams, trainData)
-#transformed <- factorise(transformed)
-#m <- train(transformed,trainDataRes,method="rf")
-#fancyRpartPlot(m$finalModel)
-
-#trainData <- factorise(trainData)
-#testData <- factorise(testData)
-
-
-#tree <- train(trainData,trainDataRes,method="rpart")
-#tree2 <- train(v,res,method="gbm")
-
-#fancyRpartPlot(tree$finalModel)
-#fancyRpartPlot(tree2$finalModel)
-
-#tree3 <- train(v,res,method="rf")
 
