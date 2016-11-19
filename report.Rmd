@@ -2,36 +2,211 @@
 title: "Practical Machine Learning Assignment"
 author: "Johan Jordaan"
 date: "07/11/2016"
-output: html_document
+output:
+  html_document:
+    keep_md: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library("RUnit")
+library("data.table")
+library("caret")
+library("rattle")
+library("glmnet")
+library("GGally")
+library("gridExtra")
+library("tidyr")
+library("purrr")
+library("nnet")
+
+cleanData <- function(x) {
+  x[x==""] <- NA
+  x[x=="NA"] <- NA
+  
+  x[is.na(x)] <- 0
+  x <- as.numeric(x);
+  x[is.na(x)] <- 0
+  
+  return(x);  
+}
 ```
 
 ## Executive Summary
 
-I build a model to predict the exececis type from the avaiable data. The model model has around a 80% accuracy on the training.
-
+I build a model to predict the class type from the available data. The final model has around a 80% accuracy on the cross validation set.
 
 ## Overview
+```{r load, include=FALSE}
+removeColumns = c("V1","user_name","raw_timestamp_part2","raw_timestamp_part2","cvtd_timestamp","new_window","num_window","classe","problem_id")
 
-This report outlines my findings in working with the ... dataset. I started by examining the data and doing some exploarory data analysis. 
-
-## Exploratory Data Analsysis and Data Cleanup
-
-
-
-
-## Model Building
+trainData <- fread("pml-training.csv")
+trainDataUserNames <- trainData$user_name
+trainDataClasse <- as.factor(trainData$classe) 
+removeIndexes <- which(names(trainData) %in% removeColumns)
+trainData <- trainData[,-removeIndexes,with=F]
 
 
-## Including Plots
+trainData <- trainData[,lapply(.SD,cleanData)]
+trainData <- sample(trainData)
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Exploratory Data Analysis
+```{r initail_plots,fig.height=2, echo=FALSE}
+p1 <- ggplot(data=data.frame(trainDataClasse),aes(x=trainDataClasse))+geom_bar()
+p2 <- ggplot(data=data.frame(trainDataUserNames),aes(x=trainDataUserNames))+geom_bar()
+grid.arrange(p1,p2,ncol=2)
+```
+
+
+## Data cleanup and feature reduction
+```{r zero_variance,echo=FALSE}
+nearZeroVarCols <- nearZeroVar(trainData)
+nearZeroVarColsRemoved <- names(trainData)[nearZeroVarCols]
+trainData <- data.table(data.frame(trainData)[, -nearZeroVarCols])
+print(head(nearZeroVarColsRemoved))
+
+```
+
+## Outlier analysis
+```{r check_outliers,echo=FALSE}
+findOutLierRows <- function(col,outlierCutOff) {
+  qnt <- quantile(col, probs=c(.25, .75))
+  H <- outlierCutOff * IQR(col)
+  
+  min <- qnt[1] - H
+  max <- qnt[2] + H
+
+  return(which(col<min | col>max))
+}
+
+outlierCutOff <- 5
+outlierRows <- unique(unlist(lapply(trainData,function(col) {
+  findOutLierRows(col,outlierCutOff)
+})))
+
+numOutlierRows <- length(outlierRows)
+
+trainData <- trainData[-(outlierRows),]
+trainDataClasse <- trainDataClasse[-(outlierRows)]
+trainDataUserNames <- trainDataUserNames[-(outlierRows)]
+
+
+```
+`r numOutlierRows` `r outlierCutOff` `r numOutlierRows / (nrow(trainData)+numOutlierRows)`
+
+
+## PCA Analsysis
+```{r pca,echo=FALSE,fig.height=2}
+preprocessParams <- preProcess(trainData, method=c("pca"))
+trainDataPCA <- predict(preprocessParams, trainData)
+pca1 <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataClasse))+geom_point(alpha=0.2)
+pca2 <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataUserNames))+geom_point(alpha=0.2)
+grid.arrange(pca1,pca2,ncol=2)
+```
+
+```{r center_by_user,echo=FALSE}
+#centerByUser <- function(data,userNames) {
+#  for(n in unique(userNames)) {
+#    m <- mean(data[userNames==n])
+#    data[userNames==n] <- data[userNames==n] - m
+#  }
+#  return(data)
+#}  
+
+
+#center <- function(data,z) {
+#  data <- data - mean(data)
+#  return(c(mean(data),z))
+#}
+
+#trainData$UserName <- trainDataUserNames
+#zi <- which(names(trainData) == "UserName")
+#trainDataX <- aggregate(as.data.frame(trainData)[,-(zi)], #list(trainData$UserName), mean)
+
+#trainData$UserName <- trainDataUserNames 
+#trainData[,.(lapply(.SD,center)),by=UserName]
+
+#trainData <- trainData[,lapply(.SD,function(x){centerByUser(x,#trainDataUserNames); })]
+```
+
+```{r pca2,fig.height=2,echo=FALSE}
+preprocessParams <- preProcess(trainData, method=c("pca"))
+trainDataPCA <- predict(preprocessParams, trainData)
+pca1 <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataClasse))+geom_point(alpha=0.2)
+pca2 <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataUserNames))+geom_point(alpha=0.2)
+grid.arrange(pca1,pca2,ncol=2)
+
+```
+
+
+```{r pca_params,echo=FALSE}
+print(preprocessParams)
+```
+
+## Looking at the PCA components 
+``` {r plot_pca_components,fig.height=3,echo=FALSE}
+a <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataClasse))+geom_point(alpha=0.03)
+b <- ggplot(trainDataPCA,aes(x=PC2,y=PC11,color=trainDataClasse))+geom_point(alpha=0.03)
+c <- ggplot(trainDataPCA,aes(x=PC1,y=PC11,color=trainDataClasse))+geom_point(alpha=0.03)
+d <- ggplot(trainDataPCA,aes(x=PC2,y=PC11,color=trainDataClasse))+geom_point(alpha=0.03)
+grid.arrange(a,b,c,d,ncol=2)
+```
+
+
+```{r check Variances,echo=FALSE}
+#trainDataPCA$classe <- trainDataClasse
+#trainDataPCAgather <- gather(trainDataPCA,"PCA","value",-(classe))
+#trainDataPCAgather$PCA <- as.factor(trainDataPCAgather$PCA)
+```
+
+## Model Building
+```{r build_a_model,echo=FALSE}
+control <- trainControl(method="repeatedcv", number=2, repeats=1)
+model <- train(x=trainDataPCA, y=trainDataClasse, method="rf",trControl=control)
+importance <- varImp(model, scale=FALSE)
+
+print(importance)
+
+print(confusionMatrix(model))
+```
+
+
+## Test Data
+```{r test_data_run,echo=FALSE}
+  testData <- fread("pml-testing.csv")
+  removeIndexes <- which(names(testData) %in% removeColumns)
+  testData <- testData[,-removeIndexes,with=F]
+  testData <- testData[,lapply(.SD,cleanData)]
+ 
+  testDataNearZeroVarCols = which(names(testData) %in% nearZeroVarColsRemoved)
+  testData <- data.table(data.frame(testData)[, -(testDataNearZeroVarCols)])
+
+  print(setdiff(names(trainData),names(testData)))
+  print(setdiff(names(testData),names(trainData)))
+  
+  testDataPCA <- predict(preprocessParams, testData)
+
+  pred <- predict(model,testDataPCA)  
+}
+
+## Results
+
+#BABAAEDeAAdaBAEEABaB - Initial
+#EAAECCDBAEAABAABEDEB - 3000 
+#x_xxxx_?_x?x__xxxx?_
+#EBBECDDBAEBADABBEDEB
+#xx_xxx_?_x?xx_xxxx?_
+
+BABAAEDeAAdaBAEEABaB Initial
+BABAAEDBAABCBAEEABBB Final
+       _  __      _
+
+
+
+## Future Work
+
+## Notes
+
+

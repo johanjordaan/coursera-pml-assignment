@@ -44,15 +44,73 @@ trainData <- data.table(data.frame(trainData)[, -nearZeroVarCols])
 
 sanityCheck(trainData,53,0)
 
+## Explore the base data
+ggplot(data=data.frame(classe),aes(x=classe))+geom_bar()
+ggplot(data=data.frame(userNames),aes(x=userNames))+geom_bar()
+
+
+# Conclusing at this point - The data needs to be scaled per user before pca
+centerByUser <- function(data,userNames) {
+  for(n in unique(userNames)) {
+    m <- mean(data[userNames==n])
+    data[userNames==n] <- data[userNames==n] - m
+  }
+  return(data)
+}  
+trainData <- trainData[,lapply(.SD,function(x){ centerByUser(x,userNames); })]
+
+# Correleation??
+correlationMatrix <- cor(trainData)
+# summarize the correlation matrix
+print(correlationMatrix)
+# find attributes that are highly corrected (ideally >0.75)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.5)
+# print indexes of highly correlated attributes
+print(highlyCorrelated)
+
+# Randomise the data
+order <- sample(c(1:nrow(trainData)))
+trainData <- trainData[order,]
+classe <- classe[order]
+#
+control <- trainControl(method="repeatedcv", number=2, repeats=1)
+# train the model
+model <- train(x=trainData, y=classe, method="lvq", preProcess="scale", trControl=control)
+# estimate variable importance
+importance <- varImp(model, scale=FALSE)
+# summarize importance
+print(importance)
+# plot importance
+#plot(importance$A)
+
+print(confusionMatrix(model))
+
+#----------------------------------
+testData <- fread("pml-testing.csv")
+testDataUserNames = testData$user_names 
+testData <- testData[,-c(1:6,which(names(testData)=="problem_id")),with=F]
+testData <- testData[,lapply(.SD,cleanData)]
+
+# Apply the same transformation on test data
+testData <- data.table(data.frame(testData)[, -nearZeroVarCols])
+testData <- testData[,lapply(.SD,function(x){ centerByUser(x,testDataUserNames); })]
+
+testDataRes <- predict(model,testData)
+
+#BABAAEDeAAdaBAEEABaB - Initial
+#EAAECCDBAEAABAABEDEB - 3000 
+#x_xxxx_?_x?x__xxxx?_
+#EBBECDDBAEBADABBEDEB
+#xx_xxx_?_x?xx_xxxx?_
+#----------------------------------s
+
+
+
 ## PCA 
 preprocessParams <- preProcess(trainData, method=c("center", "scale", "pca"))
 trainDataPCA <- predict(preprocessParams, trainData)
 
 sanityCheck(trainDataPCA,26,0)
-
-## Explore the base data
-ggplot(data=data.frame(classe),aes(x=classe))+geom_bar()
-ggplot(data=data.frame(userNames),aes(x=userNames))+geom_bar()
 
 ## Explore the PCA data a bit
 ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=classe))+geom_point(alpha=0.2)
