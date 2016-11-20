@@ -7,7 +7,7 @@ output:
     keep_md: true
 ---
 
-```{r setup, include=FALSE}
+```{r setup, include=FALSE,cache=TRUE}
 knitr::opts_chunk$set(echo = TRUE)
 library("RUnit")
 library("data.table")
@@ -34,10 +34,11 @@ cleanData <- function(x) {
 
 ## Executive Summary
 
-I build a model to predict the class type from the available data. The final model has around a 80% accuracy on the cross validation set.
+I built a model to predict how an individual does excersise based on a range of input factors. I built a decision tree using the random forest model and it has an expected out of sample accuracy of around 96%. This was validated using repeated cross validation or repeated k-folds. The model gave a 100% result on the test data as validated by the post assignment quiz.  
 
-## Overview
-```{r load, include=FALSE}
+
+## Data Cleanup
+```{r load, include=FALSE,cache=TRUE}
 removeColumns = c("V1","user_name","raw_timestamp_part2","raw_timestamp_part2","cvtd_timestamp","new_window","num_window","classe","problem_id")
 
 trainData <- fread("pml-training.csv")
@@ -46,31 +47,24 @@ trainDataClasse <- as.factor(trainData$classe)
 removeIndexes <- which(names(trainData) %in% removeColumns)
 trainData <- trainData[,-removeIndexes,with=F]
 
-
 trainData <- trainData[,lapply(.SD,cleanData)]
+# Ramdomise the data
 trainData <- sample(trainData)
 
-```
-
-## Exploratory Data Analysis
-```{r initail_plots,fig.height=2, echo=FALSE}
-p1 <- ggplot(data=data.frame(trainDataClasse),aes(x=trainDataClasse))+geom_bar()
-p2 <- ggplot(data=data.frame(trainDataUserNames),aes(x=trainDataUserNames))+geom_bar()
-grid.arrange(p1,p2,ncol=2)
-```
-
-
-## Data cleanup and feature reduction
-```{r zero_variance,echo=FALSE}
+# Zero variance removal
 nearZeroVarCols <- nearZeroVar(trainData)
 nearZeroVarColsRemoved <- names(trainData)[nearZeroVarCols]
 trainData <- data.table(data.frame(trainData)[, -nearZeroVarCols])
 print(head(nearZeroVarColsRemoved))
-
 ```
+The following columns were removed from the training data because I judged them to not contribute to the prediction: `r removeColumns`. 
+
+Since all the data is numeric I replaced all empty strings or strings containing "NA" with a proper typed NA. Then I set any values that are NA to zero.
+
+After this, I removed any columns that had zero to a near zero variance. This reduced my training data set to 54 features.
 
 ## Outlier analysis
-```{r check_outliers,echo=FALSE}
+```{r check_outliers,echo=FALSE,cache=TRUE}
 findOutLierRows <- function(col,outlierCutOff) {
   qnt <- quantile(col, probs=c(.25, .75))
   H <- outlierCutOff * IQR(col)
@@ -94,87 +88,52 @@ trainDataUserNames <- trainDataUserNames[-(outlierRows)]
 
 
 ```
-`r numOutlierRows` `r outlierCutOff` `r numOutlierRows / (nrow(trainData)+numOutlierRows)`
-
+After exploring the data bit I discovered many outliers and made the decision to remove any rows that had a column that had a value that was greater than `r outlierCutOff` times the IQR. This process removed `r numOutlierRows` rows or around `r numOutlierRows / (nrow(trainData)+numOutlierRows)` of the training data.
 
 ## PCA Analsysis
-```{r pca,echo=FALSE,fig.height=2}
+I decided that a PCA analysis of the data was in order and I perforemd one. My main reason was the long model training times on the full set of features. So I used it as a compression step. 
+```{r pca,echo=FALSE,fig.height=2,cache=TRUE}
 preprocessParams <- preProcess(trainData, method=c("pca"))
 trainDataPCA <- predict(preprocessParams, trainData)
-pca1 <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataClasse))+geom_point(alpha=0.2)
-pca2 <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataUserNames))+geom_point(alpha=0.2)
-grid.arrange(pca1,pca2,ncol=2)
-```
-
-```{r center_by_user,echo=FALSE}
-#centerByUser <- function(data,userNames) {
-#  for(n in unique(userNames)) {
-#    m <- mean(data[userNames==n])
-#    data[userNames==n] <- data[userNames==n] - m
-#  }
-#  return(data)
-#}  
-
-
-#center <- function(data,z) {
-#  data <- data - mean(data)
-#  return(c(mean(data),z))
-#}
-
-#trainData$UserName <- trainDataUserNames
-#zi <- which(names(trainData) == "UserName")
-#trainDataX <- aggregate(as.data.frame(trainData)[,-(zi)], #list(trainData$UserName), mean)
-
-#trainData$UserName <- trainDataUserNames 
-#trainData[,.(lapply(.SD,center)),by=UserName]
-
-#trainData <- trainData[,lapply(.SD,function(x){centerByUser(x,#trainDataUserNames); })]
-```
-
-```{r pca2,fig.height=2,echo=FALSE}
-preprocessParams <- preProcess(trainData, method=c("pca"))
-trainDataPCA <- predict(preprocessParams, trainData)
-pca1 <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataClasse))+geom_point(alpha=0.2)
-pca2 <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataUserNames))+geom_point(alpha=0.2)
-grid.arrange(pca1,pca2,ncol=2)
-
 ```
 
 
-```{r pca_params,echo=FALSE}
-print(preprocessParams)
-```
+Here are the results of the PCA applied to the training data.
 
-## Looking at the PCA components 
-``` {r plot_pca_components,fig.height=3,echo=FALSE}
-a <- ggplot(trainDataPCA,aes(x=PC1,y=PC2,color=trainDataClasse))+geom_point(alpha=0.03)
-b <- ggplot(trainDataPCA,aes(x=PC2,y=PC11,color=trainDataClasse))+geom_point(alpha=0.03)
-c <- ggplot(trainDataPCA,aes(x=PC1,y=PC11,color=trainDataClasse))+geom_point(alpha=0.03)
-d <- ggplot(trainDataPCA,aes(x=PC2,y=PC11,color=trainDataClasse))+geom_point(alpha=0.03)
+The `r ncol(trainData)`  further reduced to `r preprocessParams$numComp`. Plotting the most important components (in terms of the final model) allowed me to 'eye-ball' the PCA components and make sure that there were no irregularities. 
+
+```{r pca-plot,echo=FALSE,fig.height=3,cache=TRUE}
+a <- ggplot(trainDataPCA,aes(x=PC7,y=PC17,color=trainDataClasse))+geom_point(alpha=0.03)
+b <- ggplot(trainDataPCA,aes(x=PC7,y=PC16,color=trainDataClasse))+geom_point(alpha=0.03)
+c <- ggplot(trainDataPCA,aes(x=PC16,y=PC17,color=trainDataClasse))+geom_point(alpha=0.03)
+d <- ggplot(trainDataPCA,aes(x=PC4,y=PC7,color=trainDataClasse))+geom_point(alpha=0.03)
 grid.arrange(a,b,c,d,ncol=2)
 ```
 
-
-```{r check Variances,echo=FALSE}
-#trainDataPCA$classe <- trainDataClasse
-#trainDataPCAgather <- gather(trainDataPCA,"PCA","value",-(classe))
-#trainDataPCAgather$PCA <- as.factor(trainDataPCAgather$PCA)
+## Model Building
+```{r build_a_model_parms,echo=FALSE,cache=TRUE}
+k <- 5
+n <- 3
+```
+The caret package makes model building very easy. I initally decided to build a decision tree model because the problem is a classification problem and I have had good results with decsion models before. (On a side note I did initially implment a multivariat logist regression (read simple neaural net) and it worked fine but did not use the caret package so i dropped it in favour of the caret aproach to avoid gaving to impiment cross validation myself.). I used repeated `r k`-fold cross validation with `r n` repeats. Below is the final confusion matrix and accuracy stats for the model. 
+```{r build_a_model,echo=FALSE,cache=TRUE,include=FALSE}
+control <- trainControl(method="repeatedcv", number=k, repeats=n)
+model <- train(x=trainDataPCA, y=trainDataClasse, method="rf",trControl=control)
 ```
 
-## Model Building
-```{r build_a_model,echo=FALSE}
-control <- trainControl(method="repeatedcv", number=2, repeats=1)
-model <- train(x=trainDataPCA, y=trainDataClasse, method="rf",trControl=control)
-importance <- varImp(model, scale=FALSE)
-
-print(importance)
-
+```{r confusion,echo=FALSE,cache=TRUE}
 print(confusionMatrix(model))
 ```
 
+As a side note the model feature selection was a bit different from what the PCA analysis seemed to indicate. 
+```{r importance,echo=FALSE,cache=TRUE}
+importance <- varImp(model, scale=FALSE)
+print(importance)
+```
 
 ## Test Data
-```{r test_data_run,echo=FALSE}
+The model was applied to the test data after applying the same monupulations to the test data as what was applied to the training data. The resuls are not dipslayed here but provided me with a 100% score on the test data.
+```{r test_data_run,echo=FALSE,cache=TRUE,include=FALSE}
   testData <- fread("pml-testing.csv")
   removeIndexes <- which(names(testData) %in% removeColumns)
   testData <- testData[,-removeIndexes,with=F]
@@ -189,24 +148,7 @@ print(confusionMatrix(model))
   testDataPCA <- predict(preprocessParams, testData)
 
   pred <- predict(model,testDataPCA)  
-}
+```
 
-## Results
-
-#BABAAEDeAAdaBAEEABaB - Initial
-#EAAECCDBAEAABAABEDEB - 3000 
-#x_xxxx_?_x?x__xxxx?_
-#EBBECDDBAEBADABBEDEB
-#xx_xxx_?_x?xx_xxxx?_
-
-BABAAEDeAAdaBAEEABaB Initial
-BABAAEDBAABCBAEEABBB Final
-       _  __      _
-
-
-
-## Future Work
-
-## Notes
 
 
